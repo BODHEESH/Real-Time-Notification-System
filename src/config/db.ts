@@ -1,3 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+// src/config/db.ts
 
-export const prisma = new PrismaClient();
+// Export prisma instance from the connection pool
+export { prisma } from './dbPool';

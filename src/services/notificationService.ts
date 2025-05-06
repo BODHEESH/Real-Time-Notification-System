@@ -2,10 +2,16 @@ import { Request, Response } from "express";
 import { MarkNotificationAsReadDTO } from "../dtos/input/notification.input";
 import { prisma } from "@/config/db";
 import { BaseStatus } from "../dtos/output/baseStatus.dto";
+import { CacheService } from "./cacheService";
 
 
 export const softDeleteNotification = async (id: number, userId: number) => {
     try {
+        // Invalidate relevant caches before update
+        await Promise.all([
+            CacheService.delete(`unread_count:${userId}`),
+            CacheService.delete(`user_notifications:${userId}`)
+        ]);
         const userNotification = await prisma.user_notifications.findUnique({
             where: { id },
         });
@@ -52,6 +58,12 @@ export const markNotificationAsRead = async (dto: MarkNotificationAsReadDTO): Pr
     try {
         const { user_id, notification_id } = dto;
 
+        // Invalidate relevant caches before update
+        await Promise.all([
+            CacheService.delete(`unread_count:${user_id}`),
+            CacheService.delete(`user_notifications:${user_id}`)
+        ]);
+
         let data = await prisma.user_notifications.updateMany({
             where: {
                 user_id,
@@ -85,15 +97,23 @@ export const markNotificationAsRead = async (dto: MarkNotificationAsReadDTO): Pr
 
 export const getUnreadNotificationCount = async (userId: string) => {
     try {
-        const count = await prisma.user_notifications.count({
-            where: {
-                user_id: Number(userId),
-                is_read: false,
-                is_deleted: false,
+        const cacheKey = `unread_count:${userId}`;
+        
+        // Try to get from cache first
+        return await CacheService.getOrSet(
+            cacheKey,
+            async () => {
+                const count = await prisma.user_notifications.count({
+                    where: {
+                        user_id: Number(userId),
+                        is_read: false,
+                        is_deleted: false,
+                    },
+                });
+                return count;
             },
-        });
-
-        return count;
+            300 // Cache for 5 minutes
+        );
     } catch (error) {
         console.error("Error in getUnreadNotificationCount:", error);
         throw error;
@@ -121,15 +141,24 @@ export const getAllNotifications = async (req: Request, res: Response) => {
 
 export const getUserNotificationDetails = async (userId: number) => {
     try {
-        const notifications = await prisma.user_notifications.findMany({
-            where: {
-                user_id: userId,
-                is_deleted: false
+        const cacheKey = `user_notifications:${userId}`;
+        
+        // Try to get from cache first
+        const notifications = await CacheService.getOrSet(
+            cacheKey,
+            async () => {
+                return await prisma.user_notifications.findMany({
+                    where: {
+                        user_id: userId,
+                        is_deleted: false
+                    },
+                    include: {
+                        notifications: true,
+                    },
+                });
             },
-            include: {
-                notifications: true,
-            },
-        });
+            60 // Cache for 1 minute
+        );
 
         
         const formatted = notifications.map((item: any) => {
@@ -169,6 +198,11 @@ export const createNotification = async (
     type: "push" | "email" | "sms"
 ) => {
     try {
+        // Invalidate relevant caches before creating new notification
+        await Promise.all([
+            CacheService.delete(`unread_count:${userId}`),
+            CacheService.delete(`user_notifications:${userId}`)
+        ]);
         const notification = await prisma.notifications.create({
             data: {
                 title,
